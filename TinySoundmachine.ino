@@ -1,15 +1,16 @@
 
 /**
- * author: Sandra Kemmerling
- * created: 02.01.2018
- * brief: Software for a small hardware device to play music. Compatible with Arduino Uno and Teensy 3.5. Uses APA102 LEDs and custom made sliders
+   author: Sandra Kemmerling
+   created: 02.01.2018
+   brief: Software for a small hardware device to play music. Compatible with Arduino Uno and Teensy 3.5. Uses APA102 LEDs and custom made sliders
 **/
 
+#define DAC 0 //DAC can only be used with Teensy (3.5)
+
 #include <SPI.h>
-#include <Wire.h>
 
 #if DAC
-#include <TimerOne.h>
+#include <TimerOne.h> // Teensy only
 #endif
 
 #include "pitches.h"
@@ -18,19 +19,17 @@
 //-------------------------------------
 // globals & defines
 //-------------------------------------
-#define LED_FRAME_START_BITS (7<<5) // every data frame starts with 111
-#define SLIDER1_ADDR (0x0D) // 7 bit address slider 1
-#define SLIDER2_ADDR (0x6B) // 7 bit address slider 2 
+#define LED_FRAME_START_BITS (7<<5)   // every data frame starts with 111
+#define SLIDER1_ADDR (0x0D)           // 7 bit address slider 1
+#define SLIDER2_ADDR (0x6B)           // 7 bit address slider 2 
 #define SPEAKER_OUT 10
 
-#define MATH_PI 3.141592653f
-#define MIN_FREQ 30.0f // min possible frequency 30Hz
-#define SAMPLING_RATE 50 //microseconds
-#define NUM_SAMPLES 666 // num of samples needed for one sine period
-#define PERIOD 3.333f // time a sine period needs to complete in ms
-#define STEP_SIZE 0.01
-
-#define DAC 0 //DAC can only be used with Teensy (3.5)
+#define MIN_FREQ 30.0f        // min possible frequency 30Hz
+#define SAMPLING_RATE 50      // microseconds
+#define NUM_SAMPLES 666       // num of samples needed for one sine period
+#define PERIOD 3.333f         // time a sine period needs to complete in ms
+#define STEP_SIZE 0.001
+#define HALF_RESOLUTION 2048  // half resolution for DAC output
 
 #define MAX_OCTAVE 6
 #define NUM_NOTES 8
@@ -62,8 +61,7 @@ volatile boolean _sliderValueChanged = false;
 #if DAC
 int _currentNote = 0;
 int _currentNoteDuration = 0;
-volatile float _currentMultiplier;
-volatile double _dacOut; // value for DAC output
+volatile float _currentMultiplier; // multiplier used in sin function to compute the desired frequency
 volatile int _currentPeriodCount = 0;
 volatile bool _isNotePlaying = false;
 volatile bool _test = false;
@@ -205,7 +203,7 @@ void sendColorToAll(int br, int r, int g, int b) {
 
 //-------------------------------------
 
-// sends a color value to the LED at the provided index, turns of all other LEDs
+// sends a color value to the LED at the provided index, turns off all other LEDs
 void sendColorToLEDAtIndex (int ledIndex, int br, int r, int g, int b) {
   // send start frame 0000 0000 0000 0000
   for (int i = 0; i < 4; ++i) {
@@ -243,6 +241,8 @@ void sendColorForFrequency (int freq) {
 
 void playTone(int note, int beat, bool pause) {
   int duration = 0;
+
+  // if beat is -1, play tone until noTone is called
   if (beat < 0) {
     tone (SPEAKER_OUT, note);
   }
@@ -252,7 +252,6 @@ void playTone(int note, int beat, bool pause) {
   }
 
 #if DAC
-  _dacOut = 0;
   _currentNote = note;
   _currentNoteDuration = duration;
   _currentMultiplier = _currentNote / MIN_FREQ;
@@ -263,7 +262,6 @@ void playTone(int note, int beat, bool pause) {
 
   tone (SPEAKER_OUT, note, duration / 1.3);
   // to distinguish the notes, set a minimum time between them.
-  // the note's duration + 30% seems to work well:
   if (pause) {
     int pauseBetweenNotes = duration;
     delay(pauseBetweenNotes);
@@ -338,9 +336,10 @@ void checkTone () {
     _currentPeriodCount = 0;
     _currentNoteDuration = 0;
     _currentNote = 0;
-    _dacOut = 0;
   }
 }
+
+//-------------------------------------
 
 void initTimer () {
   Timer1.initialize(SAMPLING_RATE);
@@ -351,23 +350,17 @@ void initTimer () {
 //-------------------------------------
 
 void onToneTimer() {
-  volatile double temp = sin (_dacOut * MATH_PI * _currentMultiplier) + 1;
-  temp = (temp * 2048);
-  volatile uint16_t outVal = temp;
-  analogWrite(A21, outVal);
-  _dacOut += STEP_SIZE;
-  if (_dacOut > 2) {
-    _dacOut = 0;
+  static double x = 0;
+  double sinVal = sin(2 * PI * x * _currentMultiplier);
+  x += STEP_SIZE;
+
+  if (x > 1) {
+    x = 0;
     ++_currentPeriodCount;
   }
-
-  _test = !_test;
-  if (_test) {
-    digitalWrite(SPEAKER_OUT, 255);
-  }
-  else {
-    digitalWrite(SPEAKER_OUT, 0);
-  }
+  sinVal = sinVal + 1;
+  sinVal = sinVal * HALF_RESOLUTION;
+  analogWrite(A21, (int)sinVal);
 }
 #endif
 
@@ -486,7 +479,7 @@ void pollSliderInput () {
     Serial.println (_octave);
   }
   else if (_keyStatus[2] & MASK_BTN_BEAT) {
-    _melodyIndex = (_melodyIndex + 1) % NUM_MELODIES; 
+    _melodyIndex = (_melodyIndex + 1) % NUM_MELODIES;
     playTone(NOTE_C4, _keyboardBeat, false);
   }
   else if (_keyStatus[2] & MASK_BTN_MELODY) {
@@ -524,11 +517,14 @@ void setup() {
   delayMicroseconds(5);
   pinMode(_changePin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(_changePin), onSliderChange, FALLING);
-  
+
   delayMicroseconds(5);
   I2C::readFrom(SLIDER1_ADDR, 0x02, 5, _keyStatus);
 
 #if DAC
+  // increase the analogWrite resolution
+  // Teensy 3.5 ist able to output 12 bit via DAC
+  analogWriteResolution(12);
   initTimer();
 #endif
 }
@@ -536,7 +532,7 @@ void setup() {
 //-------------------------------------
 
 void loop() {
-  
+
   delayMicroseconds (5);
 #if DAC
   if (_isNotePlaying) {

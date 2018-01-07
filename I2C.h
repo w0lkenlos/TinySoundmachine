@@ -1,6 +1,8 @@
 #ifndef I2C_h
 #define I2C_h
 
+#include <Wire.h>
+
 namespace I2C{
 	// Call this in setup
 	void init ();
